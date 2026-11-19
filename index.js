@@ -41,9 +41,6 @@ const servicesCollection = db.collection("services");
 
 
 
-
-
-
 app.get("/service", async (req, res) => {
   try {
     const result = await servicesCollection.find().toArray()
@@ -268,9 +265,6 @@ app.get("/service/:id", async (req, res) => {
     })
   }
 })
-
-
-
 
 
 
