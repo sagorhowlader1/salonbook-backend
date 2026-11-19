@@ -278,3 +278,6 @@ app.get('/', (req, res) => {
 app.listen(port, () => {
     console.log(`salonbook is running on port ${port}`)
 })
+
+
+export default app
