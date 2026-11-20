@@ -35,8 +35,203 @@ export async function connectToMongoDB() {
 const mongoClient = await connectToMongoDB();
 const db = mongoClient.db("salonbook");
 const servicesCollection = db.collection("services");
+const appointmentsCollection = db.collection("appointments")
 
 
+
+
+// Helper: Validate MongoDB ObjectId
+const isValidId = (id) => ObjectId.isValid(id);
+
+// Helper: Check authenticated customer
+const requireCustomer = (req, res, next) => {
+  const customerId = req.headers["x-customer-id"];
+
+  if (!customerId) {
+    return res.status(401).json({
+      success: false,
+      message: "Unauthorized. Please login first.",
+    });
+  }
+
+  req.customerId = customerId;
+  next();
+};
+
+// Helper: Get appointment with service information
+const getAppointmentWithService = async (appointment) => {
+  let service = null;
+
+  if (isValidId(appointment.serviceId)) {
+    service = await servicesCollection.findOne({
+      _id: new ObjectId(appointment.serviceId),
+    });
+  }
+
+  return {
+    ...appointment,
+
+    serviceName:
+      appointment.serviceName || service?.name || "Unknown Service",
+
+    serviceImage:
+      appointment.serviceImage || service?.image || "",
+
+    serviceCategory:
+      appointment.serviceCategory || service?.category || "",
+
+    servicePrice:
+      appointment.servicePrice ?? service?.price ?? 0,
+  };
+};
+
+
+// GET: Customer's Own Appointments
+
+app.get(
+  "/appointments/my",
+  // verifyInternalRequest,
+  requireCustomer,
+  async (req, res) => {
+    try {
+      const appointments = await appointmentsCollection
+        .find({
+          customerId: req.customerId,
+        })
+        .sort({ createdAt: -1 })
+        .toArray();
+
+      const result = await Promise.all(
+        appointments.map(getAppointmentWithService)
+      );
+
+      res.status(200).json({
+        success: true,
+        message: "Appointments fetched successfully",
+        data: result,
+      });
+    } catch (error) {
+
+      res.status(500).json({
+        success: false,
+        message: "Failed to fetch appointments",
+      });
+    }
+  }
+);
+
+
+// GET: Single Appointment Details
+
+app.get(
+  "/appointments/:id",
+  // verifyInternalRequest,
+  requireCustomer,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      if (!isValidId(id)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid appointment ID",
+        });
+      }
+
+      const appointment = await appointmentsCollection.findOne({
+        _id: new ObjectId(id),
+        customerId: req.customerId,
+      });
+
+      if (!appointment) {
+        return res.status(404).json({
+          success: false,
+          message: "Appointment not found",
+        });
+      }
+
+      const result = await getAppointmentWithService(appointment);
+
+      res.status(200).json({
+        success: true,
+        message: "Appointment details fetched successfully",
+        data: result,
+      });
+    } catch (error) {
+
+      res.status(500).json({
+        success: false,
+        message: "Failed to fetch appointment details",
+      });
+    }
+  }
+);
+
+
+// PATCH: Cancel Pending Appointment
+
+app.patch(
+  "/appointments/:id/cancel",
+  // verifyInternalRequest,
+  requireCustomer,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      if (!isValidId(id)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid appointment ID",
+        });
+      }
+
+      const result = await appointmentsCollection.updateOne(
+        {
+          _id: new ObjectId(id),
+          customerId: req.customerId,
+          appointmentStatus: "Pending",
+        },
+        {
+          $set: {
+            appointmentStatus: "Cancelled",
+            updatedAt: new Date(),
+          },
+        }
+      );
+
+      if (result.matchedCount === 0) {
+        const appointment = await appointmentsCollection.findOne({
+          _id: new ObjectId(id),
+          customerId: req.customerId,
+        });
+
+        if (!appointment) {
+          return res.status(404).json({
+            success: false,
+            message: "Appointment not found",
+          });
+        }
+
+        return res.status(400).json({
+          success: false,
+          message:
+            "Only pending appointments can be cancelled.",
+        });
+      }
+
+      res.status(200).json({
+        success: true,
+        message: "Appointment cancelled successfully",
+      });
+    } catch (error) {
+
+      res.status(500).json({
+        success: false,
+        message: "Failed to cancel appointment",
+      });
+    }
+  }
+);
 
 
 
@@ -178,7 +373,7 @@ app.put("/service/:id", upload.single("imageFile"), async (req, res) => {
       return res.status(400).send({ message: "Invalid service ID" })
     }
 
-    const existingService = await servicesCollection.findOne({
+    const existingService = servicesCollection.findOne({
       _id: new ObjectId(id),
     })
 
