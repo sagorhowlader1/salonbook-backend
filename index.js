@@ -8,7 +8,6 @@ import path from "path"
 import fs from "fs"
 
 
-
 const app = express();
 const port = 5000;
 
@@ -249,50 +248,61 @@ app.get("/service", async (req, res) => {
 
 
 
-// Create uploads folder if it doesn't exist
-const uploadDir = path.join(process.cwd(), "uploads")
-
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true })
-}
-
 // Multer configuration
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, uploadDir)
-  },
-
-  filename: (req, file, cb) => {
-    const extension = path.extname(file.originalname)
-    const uniqueName = `${Date.now()}-${Math.round(Math.random() * 1e9)}${extension}`
-
-    cb(null, uniqueName)
-  },
-})
+const storage = multer.memoryStorage()
 
 const upload = multer({
   storage,
   limits: {
-    fileSize: 5 * 1024 * 1024,
-  },
-  fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith("image/")) {
-      cb(null, true)
-    } else {
-      cb(new Error("Only image files are allowed"))
-    }
+    fileSize: 5 * 1024 * 1024, // 5 MB
   },
 })
 
 
 
-// Serve uploaded images
-app.use("/uploads", express.static(uploadDir))
+const uploadToImgBB = async (file) => {
+  if (!process.env.IMGBB_API_KEY) {
+    throw new Error("IMGBB_API_KEY is missing")
+  }
+
+  const formData = new FormData()
+
+  formData.append(
+    "image",
+    file.buffer.toString("base64")
+  )
+
+  const response = await fetch(
+    `https://api.imgbb.com/1/upload?key=${process.env.IMGBB_API_KEY}`,
+    {
+      method: "POST",
+      body: formData,
+    }
+  )
+
+  const result = await response.json()
+
+  if (!response.ok || !result.success) {
+    throw new Error(
+      result.error?.message || "ImgBB upload failed"
+    )
+  }
+
+  return result.data.url
+}
+
 
 
 // Create service
 app.post("/service", upload.single("imageFile"), async (req, res) => {
   try {
+    let imageUrl = ""
+
+    // Upload image to ImgBB
+    if (req.file) {
+      imageUrl = await uploadToImgBB(req.file)
+    }
+
     const serviceData = {
       name: req.body.name,
       category: req.body.category,
@@ -300,20 +310,26 @@ app.post("/service", upload.single("imageFile"), async (req, res) => {
       price: Number(req.body.price),
       duration: Number(req.body.duration),
       status: req.body.status,
-      image: req.file ? `/uploads/${req.file.filename}` : "",
+      image: imageUrl,
     }
 
     const result = await servicesCollection.insertOne(serviceData)
 
     res.status(201).send({
+      success: true,
       message: "Service created successfully",
       insertedId: result.insertedId,
-      service: serviceData,
+      service: {
+        ...serviceData,
+        _id: result.insertedId,
+      },
     })
   } catch (error) {
-  
+    console.error("Service creation error:", error)
+
     res.status(500).send({
-      message: "Service creation failed",
+      success: false,
+      message: error.message || "Service creation failed",
     })
   }
 })
@@ -365,23 +381,34 @@ app.delete("/service/:id", async (req, res) => {
 })
 
 // UPDATE SERVICE
+
 app.put("/service/:id", upload.single("imageFile"), async (req, res) => {
   try {
     const { id } = req.params
 
     if (!ObjectId.isValid(id)) {
-      return res.status(400).send({ message: "Invalid service ID" })
+      return res.status(400).json({
+        success: false,
+        message: "Invalid service ID",
+      })
     }
 
-    const existingService = servicesCollection.findOne({
+    const existingService = await servicesCollection.findOne({
       _id: new ObjectId(id),
     })
 
     if (!existingService) {
-      // Remove newly uploaded file if service doesn't exist
-      if (req.file) fs.unlinkSync(req.file.path)
+      return res.status(404).json({
+        success: false,
+        message: "Service not found",
+      })
+    }
 
-      return res.status(404).send({ message: "Service not found" })
+    // Keep old image unless a new image is uploaded
+    let imageUrl = existingService.image || ""
+
+    if (req.file) {
+      imageUrl = await uploadToImgBB(req.file)
     }
 
     const updatedService = {
@@ -391,9 +418,7 @@ app.put("/service/:id", upload.single("imageFile"), async (req, res) => {
       price: Number(req.body.price),
       duration: Number(req.body.duration),
       status: req.body.status,
-      image: req.file
-        ? `/uploads/${req.file.filename}`
-        : existingService.image,
+      image: imageUrl,
     }
 
     const result = await servicesCollection.updateOne(
@@ -401,17 +426,8 @@ app.put("/service/:id", upload.single("imageFile"), async (req, res) => {
       { $set: updatedService }
     )
 
-    // Remove old image after successful update with a new image
-    if (req.file && existingService.image?.startsWith("/uploads/")) {
-      const oldFilename = path.basename(existingService.image)
-      const oldImagePath = path.join(process.cwd(), "uploads", oldFilename)
-
-      if (fs.existsSync(oldImagePath)) {
-        fs.unlinkSync(oldImagePath)
-      }
-    }
-
-    res.send({
+    res.status(200).json({
+      success: true,
       message: "Service updated successfully",
       modifiedCount: result.modifiedCount,
       service: {
@@ -422,14 +438,14 @@ app.put("/service/:id", upload.single("imageFile"), async (req, res) => {
   } catch (error) {
     console.error("Update service error:", error)
 
-    // Clean up uploaded file if update fails
-    if (req.file && fs.existsSync(req.file.path)) {
-      fs.unlinkSync(req.file.path)
-    }
-
-    res.status(500).send({ message: "Failed to update service" })
+    res.status(500).json({
+      success: false,
+      message: error.message || "Failed to update service",
+    })
   }
 })
+
+
 
 app.get("/service/:id", async (req, res) => {
   try {
