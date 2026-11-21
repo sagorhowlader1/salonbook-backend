@@ -2,6 +2,10 @@ import express from 'express';
 import cors from 'cors';
 import 'dotenv/config'
 import { MongoClient, ObjectId } from 'mongodb';
+import Stripe from 'stripe';
+
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY)
 
 import multer from "multer"
 import path from "path"
@@ -30,11 +34,18 @@ export async function connectToMongoDB() {
   }
 }
 
-  
+
 const mongoClient = await connectToMongoDB();
 const db = mongoClient.db("salonbook");
 const servicesCollection = db.collection("services");
+const usersCollection = db.collection("users");
+
 const appointmentsCollection = db.collection("appointments")
+const transactionsCollection = db.collection("transactions")
+const paymentsCollection = db.collection("payments")
+
+
+
 
 
 await appointmentsCollection.createIndex(
@@ -678,15 +689,76 @@ app.get("/service/:id", async (req, res) => {
 
 
 
+// payments related apis
+app.post('/payments/chechout-verify', async (req, res) => {
+  const { sessionId } = req.body;
+  
+  if(!sessionId){
+    return res.send({ success: false, message: 'Session ID is required!'});
+  }
+
+
+  const {
+    status,
+    payment_status,
+    customer_email,
+    metadata,
+    payment_intent,
+
+  } = await stripe.checkout.sessions.retrieve(sessionId);
+
+  // 1. is used new session
+  // 2. check is the session id for the currently logged in user
+  // 3. insert sessionId into the payments collectin
+  // 4. update user information as premium user
+
+  if (status === 'complete' && payment_status === 'paid') {
+
+    const sessionQuery = { sessionId };
+    const existingPayment = await paymentsCollection.findOne(sessionQuery);
+    if(existingPayment) {
+      return res.send({success: false, message: 'Payment already verified.' })
+    }
+
+    const payment = {
+      sessionId,
+      status,
+      payment_status,
+      customer_email,
+      userId: metadata.userId,
+      payment_intent,
+    }
+
+    const result = await paymentsCollection.insertOne(payment);
+
+    const query = {_id: new ObjectId(metadata.userId) };
+
+    const updateDoc = {
+      $set: {
+        premium: true,
+      }
+    }
+    const updateResult = await usersCollection.updateOne(
+      query,
+      updateDoc
+    );
+    res.send({success: true, result, updateResult});
+    return
+  }
+
+  res.send({success: false, message: 'Payment verification failed!'});
+})
+
+
 app.get('/', (req, res) => {
-    res.send('Salonbook is server running...')
+  res.send('Salonbook is server running...')
 });
 
 
 
 
 app.listen(port, () => {
-    console.log(`salonbook is running on port ${port}`)
+  console.log(`salonbook is running on port ${port}`)
 })
 
 
