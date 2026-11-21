@@ -414,17 +414,49 @@ app.patch(
 
 
 
-
+// Get all active services
 app.get("/service", async (req, res) => {
   try {
-    const result = await servicesCollection.find().toArray()
-    res.send(result)
+    const result = await servicesCollection
+      .find({ status: "Active" })
+      .toArray();
+
+    res.send(result);
   } catch (error) {
     res.status(500).send({
       message: "Failed to fetch services",
-    })
+    });
   }
-})
+});
+
+
+// Get featured services (only 6)
+app.get("/featured-services", async (req, res) => {
+  try {
+    const result = await servicesCollection
+      .find({ status: "Active" })
+      .limit(6)
+      .toArray();
+
+    res.send(result);
+  } catch (error) {
+    res.status(500).send({
+      message: "Failed to fetch featured services",
+    });
+  }
+});
+
+
+// app.get("/service", async (req, res) => {
+//   try {
+//     const result = await servicesCollection.find().toArray()
+//     res.send(result)
+//   } catch (error) {
+//     res.status(500).send({
+//       message: "Failed to fetch services",
+//     })
+//   }
+// })
 
 
 
