@@ -55,14 +55,6 @@ await appointmentsCollection.createIndex(
 
 
 
-
-
-
-
-
-
-
-
 // Helper: Validate MongoDB ObjectId
 const isValidId = (id) => ObjectId.isValid(id);
 
@@ -80,14 +72,6 @@ const requireCustomer = (req, res, next) => {
   req.customerId = customerId;
   next();
 };
-
-
-
-
-
-
-
-
 
 
 // Verify requests coming from our Next.js server
@@ -253,14 +237,6 @@ app.post(
 
 
 
-
-
-
-
-
-
-
-
 // GET: Customer's Own Appointments
 
 app.get(
@@ -294,10 +270,6 @@ app.get(
     }
   }
 );
-
-
-
-
 
 
 // GET: Single Appointment Details
@@ -432,6 +404,69 @@ app.get(
 
 
 
+app.get(
+  "/admin/dashboard/stats",
+  verifyInternalRequest,
+  async (req, res) => {
+    try {
+      // 1. Total registered customers
+      const totalCustomers = await usersCollection.countDocuments({
+        role: "customer",
+      });
+
+      // 2. Total active services
+      const totalActiveServices = await servicesCollection.countDocuments({
+        status: "Active",
+      });
+
+      // 3. Total appointment requests
+      const totalAppointments =
+        await appointmentsCollection.countDocuments({});
+
+      // 4. Pending appointments
+      const pendingAppointments =
+        await appointmentsCollection.countDocuments({
+          appointmentStatus: "Pending",
+        });
+
+      // 5. Confirmed appointments
+      const confirmedAppointments =
+        await appointmentsCollection.countDocuments({
+          appointmentStatus: "Confirmed",
+        });
+
+      // 6. Total successful payments
+      const totalSuccessfulPayments =
+        await paymentsCollection.countDocuments({
+          payment_status: "paid",
+        });
+
+      return res.status(200).json({
+        success: true,
+        data: {
+          totalCustomers,
+          totalActiveServices,
+          totalAppointments,
+          pendingAppointments,
+          confirmedAppointments,
+          totalSuccessfulPayments,
+        },
+      });
+    } catch (error) {
+      console.error("Admin Dashboard Stats Error:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Failed to fetch dashboard statistics.",
+      });
+    }
+  }
+);
+
+
+
+
+
 app.patch(
   "/admin/appointments/:id/status",
   verifyInternalRequest,
@@ -536,7 +571,6 @@ app.patch(
 
 
 
-
 // PATCH: Cancel Pending Appointment
 
 app.patch(
@@ -635,21 +669,6 @@ app.get("/featured-services", async (req, res) => {
     });
   }
 });
-
-
-// app.get("/service", async (req, res) => {
-//   try {
-//     const result = await servicesCollection.find().toArray()
-//     res.send(result)
-//   } catch (error) {
-//     res.status(500).send({
-//       message: "Failed to fetch services",
-//     })
-//   }
-// })
-
-
-
 
 
 
@@ -765,8 +784,6 @@ app.post("/service", upload.single("imageFile"), async (req, res) => {
     })
   }
 })
-
-
 
 
 
@@ -1033,7 +1050,7 @@ app.post('/payments/chechout-verify', async (req, res) => {
       }
 
       // Save payment record
-      await paymentsCollection.insertOne({
+      await transactionsCollection.insertOne({
         sessionId,
         status,
         payment_status,
@@ -1098,78 +1115,12 @@ app.post('/payments/chechout-verify', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Checkout Verification Error:', error);
-
     return res.status(500).send({
       success: false,
       message: 'Payment verification failed.',
     });
   }
 });
-
-
-
-// payments related apis
-// app.post('/payments/chechout-verify', async (req, res) => {
-//   const { sessionId } = req.body;
-  
-//   if(!sessionId){
-//     return res.send({ success: false, message: 'Session ID is required!'});
-//   }
-
-
-//   const {
-//     status,
-//     payment_status,
-//     customer_email,
-//     metadata,
-//     payment_intent,
-
-//   } = await stripe.checkout.sessions.retrieve(sessionId);
-
-//   // 1. is used new session
-//   // 2. check is the session id for the currently logged in user
-//   // 3. insert sessionId into the payments collectin
-//   // 4. update user information as premium user
-
-//   if (status === 'complete' && payment_status === 'paid') {
-
-//     const sessionQuery = { sessionId };
-//     const existingPayment = await paymentsCollection.findOne(sessionQuery);
-//     if(existingPayment) {
-//       return res.send({success: false, message: 'Payment already verified.' })
-//     }
-
-//     const payment = {
-//       sessionId,
-//       status,
-//       payment_status,
-//       customer_email,
-//       userId: metadata.userId,
-//       payment_intent,
-//     }
-
-//     const result = await paymentsCollection.insertOne(payment);
-
-//     const query = {_id: new ObjectId(metadata.userId) };
-
-//     const updateDoc = {
-//       $set: {
-//         premium: true,
-//       }
-//     }
-//     const updateResult = await usersCollection.updateOne(
-//       query,
-//       updateDoc
-//     );
-//     res.send({success: true, result, updateResult});
-//     return
-//   }
-
-//   res.send({success: false, message: 'Payment verification failed!'});
-// })
-
-
 
 
 
@@ -1247,12 +1198,9 @@ app.get(
 
 
 
-
-
 app.get('/', (req, res) => {
   res.send('Salonbook is server running...')
 });
-
 
 
 
