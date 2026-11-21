@@ -347,6 +347,196 @@ app.get(
 );
 
 
+
+app.get(
+  "/admin/appointments",
+  verifyInternalRequest,
+  async (req, res) => {
+    try {
+      // 1. Get all appointments (latest first)
+      const appointments = await appointmentsCollection
+        .find({})
+        .sort({ createdAt: -1 })
+        .toArray();
+
+      // 2. Attach customer information
+      const allAppointments = await Promise.all(
+        appointments.map(async (appointment) => {
+          let customer = null;
+
+          if (
+            appointment.customerId &&
+            ObjectId.isValid(appointment.customerId)
+          ) {
+            customer = await usersCollection.findOne(
+              {
+                _id: new ObjectId(appointment.customerId),
+              },
+              {
+                projection: {
+                  name: 1,
+                  email: 1,
+                },
+              }
+            );
+          }
+
+          return {
+            _id: appointment._id,
+            
+            customer: {
+              name: customer?.name || "Unknown Customer",
+              email: customer?.email || "N/A",
+            },
+
+            service: {
+              id: appointment.serviceId,
+              name: appointment.serviceName,
+              category: appointment.serviceCategory || "",
+              image: appointment.serviceImage || "",
+              price: appointment.servicePrice,
+              duration: appointment.serviceDuration,
+            },
+
+            appointmentDate: appointment.appointmentDate,
+            timeSlot: appointment.timeSlot,
+            message: appointment.message || "",
+
+            appointmentStatus: appointment.appointmentStatus,
+            paymentStatus: appointment.paymentStatus,
+
+            createdAt: appointment.createdAt,
+            updatedAt: appointment.updatedAt,
+          };
+        })
+      );
+
+      return res.status(200).json({
+        success: true,
+        message: "All appointments fetched successfully.",
+        total: allAppointments.length,
+        data: allAppointments,
+      });
+
+    } catch (error) {
+      console.error("Admin Appointments Error:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Failed to fetch appointments.",
+      });
+    }
+  }
+);
+
+
+
+
+app.patch(
+  "/admin/appointments/:id/status",
+  verifyInternalRequest,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { status } = req.body;
+
+      // 1. Validate appointment ID
+      if (!ObjectId.isValid(id)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid appointment ID.",
+        });
+      }
+
+      // 2. Validate requested status
+      if (!["Confirmed", "Cancelled"].includes(status)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid appointment status.",
+        });
+      }
+
+      // 3. Find appointment
+      const appointment = await appointmentsCollection.findOne({
+        _id: new ObjectId(id),
+      });
+
+      if (!appointment) {
+        return res.status(404).json({
+          success: false,
+          message: "Appointment not found.",
+        });
+      }
+
+      // 4. Confirm only Pending appointments
+      if (
+        status === "Confirmed" &&
+        appointment.appointmentStatus !== "Pending"
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "Only pending appointments can be confirmed.",
+        });
+      }
+
+      // 5. Cancel Pending or Confirmed appointments
+      if (
+        status === "Cancelled" &&
+        !["Pending", "Confirmed"].includes(
+          appointment.appointmentStatus
+        )
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "Only pending or confirmed appointments can be cancelled.",
+        });
+      }
+
+      // 6. Update appointment status
+      const result = await appointmentsCollection.updateOne(
+        {
+          _id: new ObjectId(id),
+          appointmentStatus: appointment.appointmentStatus,
+        },
+        {
+          $set: {
+            appointmentStatus: status,
+            updatedAt: new Date(),
+          },
+        }
+      );
+
+      if (result.modifiedCount === 0) {
+        return res.status(409).json({
+          success: false,
+          message: "Appointment status has already changed. Please refresh.",
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: `Appointment ${status.toLowerCase()} successfully.`,
+        data: {
+          _id: id,
+          appointmentStatus: status,
+          paymentStatus: appointment.paymentStatus,
+        },
+      });
+
+    } catch (error) {
+      console.error("Update Appointment Status Error:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Failed to update appointment status.",
+      });
+    }
+  }
+);
+
+
+
+
 // PATCH: Cancel Pending Appointment
 
 app.patch(
@@ -978,6 +1168,85 @@ app.post('/payments/chechout-verify', async (req, res) => {
 
 //   res.send({success: false, message: 'Payment verification failed!'});
 // })
+
+
+
+
+
+// Admin Transactions API
+app.get(
+  "/admin/transactions",
+  verifyInternalRequest,
+  async (req, res) => {
+    try {
+      const payments = await paymentsCollection
+        .find({})
+        .sort({ createdAt: -1 })
+        .toArray();
+
+      const transactions = await Promise.all(
+        payments.map(async (payment) => {
+          let customer = null;
+          let appointment = null;
+
+          if (payment.userId && ObjectId.isValid(payment.userId)) {
+            customer = await usersCollection.findOne(
+              { _id: new ObjectId(payment.userId) },
+              { projection: { name: 1, email: 1 } }
+            );
+          }
+
+          if (
+            payment.appointmentId &&
+            ObjectId.isValid(payment.appointmentId)
+          ) {
+            appointment = await appointmentsCollection.findOne({
+              _id: new ObjectId(payment.appointmentId),
+            });
+          }
+
+          return {
+            _id: payment._id,
+            customerName: customer?.name || "Unknown Customer",
+            customerEmail:
+              customer?.email || payment.customer_email || "N/A",
+
+            serviceName: appointment?.serviceName || "Premium Payment",
+            appointmentDate: appointment?.appointmentDate || "N/A",
+
+            amount: payment.amount_total
+              ? payment.amount_total / 100
+              : null,
+
+            currency: payment.currency?.toUpperCase() || "N/A",
+
+            sessionId: payment.sessionId || "N/A",
+
+            paymentStatus: payment.payment_status || "Unknown",
+
+            transactionDate: payment.createdAt || null,
+          };
+        })
+      );
+
+      return res.status(200).json({
+        success: true,
+        total: transactions.length,
+        data: transactions,
+      });
+    } catch (error) {
+      console.error("Admin Transactions Error:", error);
+
+      return res.status(500).json({
+        success: false,
+        message: "Failed to fetch transactions.",
+      });
+    }
+  }
+);
+
+
+
 
 
 app.get('/', (req, res) => {
