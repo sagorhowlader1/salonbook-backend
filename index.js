@@ -37,6 +37,19 @@ const servicesCollection = db.collection("services");
 const appointmentsCollection = db.collection("appointments")
 
 
+await appointmentsCollection.createIndex(
+  { activeSlotKey: 1 },
+  { unique: true, sparse: true }
+);
+
+
+
+
+
+
+
+
+
 
 
 // Helper: Validate MongoDB ObjectId
@@ -57,39 +70,191 @@ const requireCustomer = (req, res, next) => {
   next();
 };
 
-// Helper: Get appointment with service information
-const getAppointmentWithService = async (appointment) => {
-  let service = null;
 
-  if (isValidId(appointment.serviceId)) {
-    service = await servicesCollection.findOne({
-      _id: new ObjectId(appointment.serviceId),
+
+
+
+
+
+
+
+
+// Verify requests coming from our Next.js server
+const verifyInternalRequest = (req, res, next) => {
+  const secret = process.env.INTERNAL_API_SECRET;
+
+  if (
+    !secret ||
+    req.headers["x-internal-api-secret"] !== secret
+  ) {
+    return res.status(403).json({
+      success: false,
+      message: "Forbidden: Invalid internal request.",
     });
   }
 
-  return {
-    ...appointment,
-
-    serviceName:
-      appointment.serviceName || service?.name || "Unknown Service",
-
-    serviceImage:
-      appointment.serviceImage || service?.image || "",
-
-    serviceCategory:
-      appointment.serviceCategory || service?.category || "",
-
-    servicePrice:
-      appointment.servicePrice ?? service?.price ?? 0,
-  };
+  next();
 };
+
+
+// POST: Create Customer Appointment
+app.post(
+  "/appointments",
+  // verifyInternalRequest,
+  requireCustomer,
+  async (req, res) => {
+    try {
+      const {
+        serviceId,
+        appointmentDate,
+        timeSlot,
+        message,
+      } = req.body;
+
+      // 1. Validate required fields
+      if (!serviceId || !appointmentDate || !timeSlot) {
+        return res.status(400).json({
+          success: false,
+          message: "Service, appointment date and time slot are required.",
+        });
+      }
+
+      // 2. Validate Service ID
+      if (!ObjectId.isValid(serviceId)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid service ID.",
+        });
+      }
+
+      // 3. Validate appointment date
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(appointmentDate)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid appointment date.",
+        });
+      }
+
+      const selectedDate = new Date(`${appointmentDate}T00:00:00`);
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      if (
+        Number.isNaN(selectedDate.getTime()) ||
+        selectedDate < today
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "Please select a valid future date.",
+        });
+      }
+
+      // 4. Validate time slot
+      const allowedTimeSlots = [
+        "09:00 AM - 10:00 AM",
+        "10:00 AM - 11:00 AM",
+        "11:00 AM - 12:00 PM",
+        "02:00 PM - 03:00 PM",
+        "03:00 PM - 04:00 PM",
+        "04:00 PM - 05:00 PM",
+      ];
+
+      if (!allowedTimeSlots.includes(timeSlot)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid appointment time slot.",
+        });
+      }
+
+      // 5. Check service availability
+      const service = await servicesCollection.findOne({
+        _id: new ObjectId(serviceId),
+        status: "Active",
+      });
+
+      if (!service) {
+        return res.status(400).json({
+          success: false,
+          message: "This service is currently unavailable.",
+        });
+      }
+
+      // 6. Prevent duplicate active appointments
+      const existingAppointment =
+        await appointmentsCollection.findOne({
+          appointmentDate,
+          timeSlot,
+          appointmentStatus: {
+            $in: ["Pending", "Confirmed"],
+          },
+        });
+
+      if (existingAppointment) {
+        return res.status(409).json({
+          success: false,
+          message: "This date and time slot is already booked.",
+        });
+      }
+
+      // 7. Create appointment
+      const appointmentData = {
+        customerId: req.customerId,
+        serviceId,
+        serviceName: service.name,
+        serviceImage: service.image || "",
+        serviceCategory: service.category || "",
+        servicePrice: Number(service.price) || 0,
+        serviceDuration: Number(service.duration) || 0,
+
+        appointmentDate,
+        timeSlot,
+        message: message?.trim() || "",
+
+        appointmentStatus: "Pending",
+        paymentStatus: "Unpaid",
+
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      const result = await appointmentsCollection.insertOne(
+        appointmentData
+      );
+
+      res.status(201).json({
+        success: true,
+        message: "Appointment booked successfully!",
+        data: {
+          ...appointmentData,
+          _id: result.insertedId,
+        },
+      });
+    } catch (error) {
+      console.error("Create Appointment Backend Error:", error);
+
+      res.status(500).json({
+        success: false,
+        message: "Failed to create appointment.",
+      });
+    }
+  }
+);
+
+
+
+
+
+
+
+
+
 
 
 // GET: Customer's Own Appointments
 
 app.get(
   "/appointments/my",
-  // verifyInternalRequest,
+  verifyInternalRequest,
   requireCustomer,
   async (req, res) => {
     try {
@@ -120,11 +285,15 @@ app.get(
 );
 
 
+
+
+
+
 // GET: Single Appointment Details
 
 app.get(
   "/appointments/:id",
-  // verifyInternalRequest,
+  verifyInternalRequest,
   requireCustomer,
   async (req, res) => {
     try {
@@ -171,7 +340,7 @@ app.get(
 
 app.patch(
   "/appointments/:id/cancel",
-  // verifyInternalRequest,
+  verifyInternalRequest,
   requireCustomer,
   async (req, res) => {
     try {
@@ -247,6 +416,36 @@ app.get("/service", async (req, res) => {
 })
 
 
+
+
+
+
+// Helper: Get appointment with service information
+const getAppointmentWithService = async (appointment) => {
+  let service = null;
+
+  if (isValidId(appointment.serviceId)) {
+    service = await servicesCollection.findOne({
+      _id: new ObjectId(appointment.serviceId),
+    });
+  }
+
+  return {
+    ...appointment,
+
+    serviceName:
+      appointment.serviceName || service?.name || "Unknown Service",
+
+    serviceImage:
+      appointment.serviceImage || service?.image || "",
+
+    serviceCategory:
+      appointment.serviceCategory || service?.category || "",
+
+    servicePrice:
+      appointment.servicePrice ?? service?.price ?? 0,
+  };
+};
 
 // Multer configuration
 const storage = multer.memoryStorage()
