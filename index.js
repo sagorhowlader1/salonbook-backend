@@ -111,7 +111,7 @@ const verifyInternalRequest = (req, res, next) => {
 // POST: Create Customer Appointment
 app.post(
   "/appointments",
-  // verifyInternalRequest,
+  verifyInternalRequest,
   requireCustomer,
   async (req, res) => {
     try {
@@ -721,35 +721,164 @@ app.get("/service/:id", async (req, res) => {
 
 
 
-// payments related apis
+
 app.post('/payments/chechout-verify', async (req, res) => {
-  const { sessionId } = req.body;
-  
-  if(!sessionId){
-    return res.send({ success: false, message: 'Session ID is required!'});
-  }
+  try {
+    const { sessionId } = req.body;
 
+    if (!sessionId) {
+      return res.status(400).send({
+        success: false,
+        message: 'Session ID is required!',
+      });
+    }
 
-  const {
-    status,
-    payment_status,
-    customer_email,
-    metadata,
-    payment_intent,
+    // 1. Retrieve Stripe Checkout Session
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
 
-  } = await stripe.checkout.sessions.retrieve(sessionId);
+    const {
+      status,
+      payment_status,
+      customer_email,
+      metadata,
+      payment_intent,
+      amount_total,
+      currency,
+    } = session;
 
-  // 1. is used new session
-  // 2. check is the session id for the currently logged in user
-  // 3. insert sessionId into the payments collectin
-  // 4. update user information as premium user
+    if (status !== 'complete' || payment_status !== 'paid') {
+      return res.status(400).send({
+        success: false,
+        message: 'Payment verification failed!',
+      });
+    }
 
-  if (status === 'complete' && payment_status === 'paid') {
+    // 2. Appointment Payment Verification
+    if (metadata?.appointmentId) {
+      const appointmentId = metadata.appointmentId;
+      const userId = metadata.userId;
 
-    const sessionQuery = { sessionId };
-    const existingPayment = await paymentsCollection.findOne(sessionQuery);
-    if(existingPayment) {
-      return res.send({success: false, message: 'Payment already verified.' })
+      if (
+        !ObjectId.isValid(appointmentId) ||
+        !ObjectId.isValid(userId)
+      ) {
+        return res.status(400).send({
+          success: false,
+          message: 'Invalid appointment or user ID.',
+        });
+      }
+
+      const appointmentQuery = {
+        _id: new ObjectId(appointmentId),
+        customerId: userId,
+      };
+
+      const appointment = await appointmentsCollection.findOne(
+        appointmentQuery
+      );
+
+      if (!appointment) {
+        return res.status(404).send({
+          success: false,
+          message: 'Appointment not found.',
+        });
+      }
+
+      // Verify payment amount
+      const expectedAmount = Math.round(
+        Number(appointment.servicePrice) * 100
+      );
+
+      if (
+        amount_total !== expectedAmount ||
+        currency !== 'usd'
+      ) {
+        return res.status(400).send({
+          success: false,
+          message: 'Payment amount verification failed.',
+        });
+      }
+
+      const existingPayment = await paymentsCollection.findOne({
+        sessionId,
+      });
+
+      if (existingPayment) {
+        if (
+          appointment.paymentStatus === 'Paid' &&
+          appointment.appointmentStatus === 'Confirmed'
+        ) {
+          return res.send({
+            success: true,
+            message: 'Appointment payment already verified.',
+          });
+        }
+
+        return res.status(409).send({
+          success: false,
+          message: 'Payment record already exists.',
+        });
+      }
+
+      // Update appointment status
+      const updateResult = await appointmentsCollection.updateOne(
+        {
+          ...appointmentQuery,
+          paymentStatus: 'Unpaid',
+        },
+        {
+          $set: {
+            paymentStatus: 'Paid',
+            appointmentStatus: 'Confirmed',
+            updatedAt: new Date(),
+          },
+        }
+      );
+
+      if (updateResult.modifiedCount !== 1) {
+        return res.status(409).send({
+          success: false,
+          message: 'Appointment could not be updated.',
+        });
+      }
+
+      // Save payment record
+      await paymentsCollection.insertOne({
+        sessionId,
+        status,
+        payment_status,
+        customer_email,
+        userId,
+        appointmentId,
+        payment_intent,
+        amount_total,
+        currency,
+        createdAt: new Date(),
+      });
+
+      return res.send({
+        success: true,
+        message: 'Appointment payment verified successfully!',
+      });
+    }
+
+    // 3. Existing Premium Payment Verification
+    const existingPayment = await paymentsCollection.findOne({
+      sessionId,
+    });
+
+    if (existingPayment) {
+      return res.send({
+        success: false,
+        message: 'Payment already verified.',
+      });
+    }
+
+    if (!metadata?.userId || !ObjectId.isValid(metadata.userId)) {
+      return res.status(400).send({
+        success: false,
+        message: 'Invalid user ID.',
+      });
     }
 
     const payment = {
@@ -759,27 +888,96 @@ app.post('/payments/chechout-verify', async (req, res) => {
       customer_email,
       userId: metadata.userId,
       payment_intent,
-    }
+    };
 
     const result = await paymentsCollection.insertOne(payment);
 
-    const query = {_id: new ObjectId(metadata.userId) };
-
-    const updateDoc = {
-      $set: {
-        premium: true,
-      }
-    }
     const updateResult = await usersCollection.updateOne(
-      query,
-      updateDoc
+      { _id: new ObjectId(metadata.userId) },
+      {
+        $set: {
+          premium: true,
+        },
+      }
     );
-    res.send({success: true, result, updateResult});
-    return
-  }
 
-  res.send({success: false, message: 'Payment verification failed!'});
-})
+    return res.send({
+      success: true,
+      result,
+      updateResult,
+    });
+
+  } catch (error) {
+    console.error('Checkout Verification Error:', error);
+
+    return res.status(500).send({
+      success: false,
+      message: 'Payment verification failed.',
+    });
+  }
+});
+
+
+
+// payments related apis
+// app.post('/payments/chechout-verify', async (req, res) => {
+//   const { sessionId } = req.body;
+  
+//   if(!sessionId){
+//     return res.send({ success: false, message: 'Session ID is required!'});
+//   }
+
+
+//   const {
+//     status,
+//     payment_status,
+//     customer_email,
+//     metadata,
+//     payment_intent,
+
+//   } = await stripe.checkout.sessions.retrieve(sessionId);
+
+//   // 1. is used new session
+//   // 2. check is the session id for the currently logged in user
+//   // 3. insert sessionId into the payments collectin
+//   // 4. update user information as premium user
+
+//   if (status === 'complete' && payment_status === 'paid') {
+
+//     const sessionQuery = { sessionId };
+//     const existingPayment = await paymentsCollection.findOne(sessionQuery);
+//     if(existingPayment) {
+//       return res.send({success: false, message: 'Payment already verified.' })
+//     }
+
+//     const payment = {
+//       sessionId,
+//       status,
+//       payment_status,
+//       customer_email,
+//       userId: metadata.userId,
+//       payment_intent,
+//     }
+
+//     const result = await paymentsCollection.insertOne(payment);
+
+//     const query = {_id: new ObjectId(metadata.userId) };
+
+//     const updateDoc = {
+//       $set: {
+//         premium: true,
+//       }
+//     }
+//     const updateResult = await usersCollection.updateOne(
+//       query,
+//       updateDoc
+//     );
+//     res.send({success: true, result, updateResult});
+//     return
+//   }
+
+//   res.send({success: false, message: 'Payment verification failed!'});
+// })
 
 
 app.get('/', (req, res) => {
