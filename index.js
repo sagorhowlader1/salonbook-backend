@@ -568,7 +568,6 @@ app.patch(
 );
 
 
-
 // PATCH: Cancel Pending Appointment
 
 app.patch(
@@ -633,7 +632,6 @@ app.patch(
     }
   }
 );
-
 
 
 // Get all active services
