@@ -46,8 +46,6 @@ const paymentsCollection = db.collection("payments")
 
 
 
-
-
 await appointmentsCollection.createIndex(
   { activeSlotKey: 1 },
   { unique: true, sparse: true }
@@ -698,6 +696,8 @@ const getAppointmentWithService = async (appointment) => {
       appointment.servicePrice ?? service?.price ?? 0,
   };
 };
+
+
 
 // Multer configuration
 const storage = multer.memoryStorage()
